@@ -8,6 +8,8 @@
             DownstreamPort = downstreamPort;
         }
 
+        public string DownstreamHostName { get; set; }
+
         public string DownstreamHost { get; }
 
         public int DownstreamPort { get; }

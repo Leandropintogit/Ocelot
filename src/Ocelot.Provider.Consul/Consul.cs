@@ -1,15 +1,15 @@
-﻿namespace Ocelot.Provider.Consul
-{
-    using global::Consul;
-    using Infrastructure.Extensions;
-    using Logging;
-    using ServiceDiscovery.Providers;
+﻿using Consul;
+using Ocelot.Infrastructure.Extensions;
+using Ocelot.Logging;
+using Ocelot.ServiceDiscovery.Providers;
     using System;
     using System.Collections.Generic;
     using System.Linq;
     using System.Threading.Tasks;
-    using Values;
+using Ocelot.Values;
 
+namespace Ocelot.Provider.Consul
+{
     public class Consul : IServiceDiscoveryProvider
     {
         private readonly ConsulRegistryConfiguration _config;
@@ -27,6 +27,7 @@
         public async Task<List<Service>> Get()
         {
             var queryResult = await _consul.Health.Service(_config.KeyOfServiceInConsul, string.Empty, true);
+            var nodes = await _consul.Catalog.Nodes();
 
             var services = new List<Service>();
 
@@ -34,16 +35,7 @@
             {
                 if (IsValid(serviceEntry))
                 {
-                    var nodes = await _consul.Catalog.Nodes();
-                    if (nodes.Response == null)
-                    {
-                        services.Add(BuildService(serviceEntry, null));
-                    }
-                    else
-                    {
-                        var serviceNode = nodes.Response.FirstOrDefault(n => n.Address == serviceEntry.Service.Address);
-                        services.Add(BuildService(serviceEntry, serviceNode));
-                    }
+                    services.Add(BuildService(serviceEntry.Service, nodes.Response?.FirstOrDefault(n => n.Address == serviceEntry.Service.Address)));
                 }
                 else
                 {
@@ -54,30 +46,26 @@
             return services.ToList();
         }
 
-        private Service BuildService(ServiceEntry serviceEntry, Node serviceNode)
+        private static Service BuildService(AgentService agentService, Node serviceNode)
         {
-            return new Service(
-                serviceEntry.Service.Service,
-                new ServiceHostAndPort(serviceNode == null ? serviceEntry.Service.Address : serviceNode.Name, serviceEntry.Service.Port),
-                serviceEntry.Service.ID,
-                GetVersionFromStrings(serviceEntry.Service.Tags),
-                serviceEntry.Service.Tags ?? Enumerable.Empty<string>());
+            var serviceHostAndPort = new ServiceHostAndPort(agentService.Address, agentService.Port)
+        {
+                DownstreamHostName = serviceNode?.Name
+            };
+
+            return new Service(agentService.Service, serviceHostAndPort, agentService.ID, GetVersionFromStrings(agentService.Tags),
+                agentService.Tags ?? Enumerable.Empty<string>());
         }
 
-        private bool IsValid(ServiceEntry serviceEntry)
-        {
-            if (string.IsNullOrEmpty(serviceEntry.Service.Address) || serviceEntry.Service.Address.Contains("http://") || serviceEntry.Service.Address.Contains("https://") || serviceEntry.Service.Port <= 0)
+        private static bool IsValid(ServiceEntry serviceEntry)
             {
-                return false;
-            }
-
-            return true;
+            return !string.IsNullOrEmpty(serviceEntry.Service.Address) && !serviceEntry.Service.Address.Contains("http://")
+                && !serviceEntry.Service.Address.Contains("https://") && serviceEntry.Service.Port > 0;
         }
 
-        private string GetVersionFromStrings(IEnumerable<string> strings)
+        private static string GetVersionFromStrings(IEnumerable<string> strings)
         {
-            return strings
-                ?.FirstOrDefault(x => x.StartsWith(VersionPrefix, StringComparison.Ordinal))
+            return strings?.FirstOrDefault(x => x.StartsWith(VersionPrefix, StringComparison.Ordinal))
                 .TrimStart(VersionPrefix);
         }
     }

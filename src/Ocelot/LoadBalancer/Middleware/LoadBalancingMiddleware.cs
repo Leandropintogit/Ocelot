@@ -11,9 +11,7 @@ namespace Ocelot.LoadBalancer.Middleware
         private readonly OcelotRequestDelegate _next;
         private readonly ILoadBalancerHouse _loadBalancerHouse;
 
-        public LoadBalancingMiddleware(OcelotRequestDelegate next,
-            IOcelotLoggerFactory loggerFactory,
-            ILoadBalancerHouse loadBalancerHouse)
+        public LoadBalancingMiddleware(OcelotRequestDelegate next, IOcelotLoggerFactory loggerFactory, ILoadBalancerHouse loadBalancerHouse)
                 : base(loggerFactory.CreateLogger<LoadBalancingMiddleware>())
         {
             _next = next;
@@ -39,6 +37,12 @@ namespace Ocelot.LoadBalancer.Middleware
             }
 
             context.DownstreamRequest.Host = hostAndPort.Data.DownstreamHost;
+
+            if (!string.IsNullOrWhiteSpace(hostAndPort.Data.DownstreamHostName) &&
+                (context.DownstreamReRoute.DownstreamScheme == "https" || context.DownstreamReRoute.DownstreamScheme == "wss"))
+            {
+                context.DownstreamRequest.Host = hostAndPort.Data.DownstreamHostName;
+            }
 
             if (hostAndPort.Data.DownstreamPort > 0)
             {
