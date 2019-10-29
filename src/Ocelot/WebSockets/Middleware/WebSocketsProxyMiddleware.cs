@@ -15,26 +15,19 @@ namespace Ocelot.WebSockets.Middleware
 {
     public class WebSocketsProxyMiddleware : OcelotMiddleware
     {
-        private static readonly string[] NotForwardedWebSocketHeaders = new[] { "Connection", "Host", "Upgrade", "Sec-WebSocket-Accept", "Sec-WebSocket-Protocol", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions" };
+        private static readonly string[] NotForwardedWebSocketHeaders = { "Connection", "Host", "Upgrade", "Sec-WebSocket-Accept", "Sec-WebSocket-Protocol", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Extensions" };
         private const int DefaultWebSocketBufferSize = 4096;
-        private const int StreamCopyBufferSize = 81920;
         private readonly OcelotRequestDelegate _next;
 
-        public WebSocketsProxyMiddleware(OcelotRequestDelegate next,
-            IOcelotLoggerFactory loggerFactory)
+        public WebSocketsProxyMiddleware(OcelotRequestDelegate next, IOcelotLoggerFactory loggerFactory)
                 : base(loggerFactory.CreateLogger<WebSocketsProxyMiddleware>())
         {
             _next = next;
         }
 
-        private static async Task PumpWebSocket(WebSocket source, WebSocket destination, int bufferSize, CancellationToken cancellationToken)
+        private static async Task PumpWebSocket(WebSocket source, WebSocket destination, CancellationToken cancellationToken)
         {
-            if (bufferSize <= 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(bufferSize));
-            }
-
-            var buffer = new byte[bufferSize];
+            var buffer = new byte[DefaultWebSocketBufferSize];
             while (true)
             {
                 WebSocketReceiveResult result;
@@ -44,22 +37,23 @@ namespace Ocelot.WebSockets.Middleware
                 }
                 catch (OperationCanceledException)
                 {
-                    await destination.CloseOutputAsync(WebSocketCloseStatus.EndpointUnavailable, null, cancellationToken);
+                    await CloseWebSocket(destination, cancellationToken);
                     return;
                 }
                 catch (WebSocketException e)
                 {
-                    if (e.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+                    if (e.WebSocketErrorCode != WebSocketError.ConnectionClosedPrematurely)
                     {
-                        await destination.CloseOutputAsync(WebSocketCloseStatus.EndpointUnavailable, null, cancellationToken);
+                        throw;
+                    }
+
+                    await CloseWebSocket(destination, cancellationToken);
                         return;
                     }
-                    throw;
-                }
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    await destination.CloseOutputAsync(source.CloseStatus.Value, source.CloseStatusDescription, cancellationToken);
+                    await CloseWebSocket(destination, cancellationToken, source.CloseStatus.GetValueOrDefault(), source.CloseStatusDescription);
                     return;
                 }
 
@@ -70,6 +64,13 @@ namespace Ocelot.WebSockets.Middleware
         public async Task Invoke(DownstreamContext context)
         {
             await Proxy(context.HttpContext, context.DownstreamRequest.ToUri());
+        }
+
+        private static Task CloseWebSocket(WebSocket webSocket, CancellationToken cancellationToken,
+            WebSocketCloseStatus closeStatus = WebSocketCloseStatus.EndpointUnavailable, string message = "")
+        {
+            return webSocket.State == WebSocketState.Open || webSocket.State == WebSocketState.CloseReceived
+                ? webSocket.CloseAsync(closeStatus, message, cancellationToken) : Task.CompletedTask;
         }
 
         private async Task Proxy(HttpContext context, string serverEndpoint)
@@ -95,13 +96,16 @@ namespace Ocelot.WebSockets.Middleware
                 client.Options.AddSubProtocol(protocol);
             }
 
-            foreach (var headerEntry in context.Request.Headers)
+            foreach (var (key, value) in context.Request.Headers)
             {
-                if (!NotForwardedWebSocketHeaders.Contains(headerEntry.Key, StringComparer.OrdinalIgnoreCase))
+                if (NotForwardedWebSocketHeaders.Contains(key, StringComparer.OrdinalIgnoreCase))
                 {
+                    continue;
+                }
+
                     try
                     {
-                        client.Options.SetRequestHeader(headerEntry.Key, headerEntry.Value);
+                    client.Options.SetRequestHeader(key, value);
                     }
                     catch (ArgumentException)
                     {
@@ -110,15 +114,12 @@ namespace Ocelot.WebSockets.Middleware
                         // .NET Core does not exhibit this issue, ironically due to a separate bug (https://github.com/dotnet/corefx/issues/18784)
                     }
                 }
-            }
 
             var destinationUri = new Uri(serverEndpoint);
             await client.ConnectAsync(destinationUri, context.RequestAborted);
-            using (var server = await context.WebSockets.AcceptWebSocketAsync(client.SubProtocol))
-            {
-                var bufferSize = DefaultWebSocketBufferSize;
-                await Task.WhenAll(PumpWebSocket(client, server, bufferSize, context.RequestAborted), PumpWebSocket(server, client, bufferSize, context.RequestAborted));
-            }
+
+            using var server = await context.WebSockets.AcceptWebSocketAsync(client.SubProtocol);
+            await Task.WhenAll(PumpWebSocket(client, server, context.RequestAborted), PumpWebSocket(server, client, context.RequestAborted));
         }
     }
 }

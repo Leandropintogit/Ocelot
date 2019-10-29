@@ -29,7 +29,7 @@ namespace Ocelot.Requester
 
             // This is hardcoded at the moment but can easily be added to configuration
             // if required by a user request.
-            _defaultTimeout = TimeSpan.FromSeconds(90);
+            _defaultTimeout = TimeSpan.FromSeconds(10);
         }
 
         public IHttpClient Create(DownstreamContext context)
@@ -107,7 +107,9 @@ namespace Ocelot.Requester
 
         public void Save()
         {
-            _cacheHandlers.Set(_cacheKey, _client, TimeSpan.FromHours(24));
+            _client.Client.Dispose();
+            //Removido Leandro
+            //_cacheHandlers.Set(_cacheKey, _client, TimeSpan.FromHours(24));
         }
 
         private HttpMessageHandler CreateHttpMessageHandler(HttpMessageHandler httpMessageHandler, DownstreamReRoute request)
